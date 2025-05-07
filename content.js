@@ -9,6 +9,7 @@
   let isOverlayVisible = false;
   let peachAIToken;
   let loginID;
+
   function getTokenFromTab() {
     console.log("test");
     chrome.runtime.sendMessage({ action: "getTokenFromTab" }, (response) => {
@@ -25,6 +26,22 @@
     });
   }
 
+  function injectSwipeHandler(iframe) {
+    const script = document.createElement("script");
+    script.textContent = `
+      window.addEventListener("message", (event) => {
+        if (event.data.action === "swipe") {
+          const scrollable = document.querySelector(".scrollable, [style*='overflow-x: auto'], [style*='overflow-x: scroll']") || document.body;
+          if (scrollable) {
+            const step = 100; // Pixels to scroll per keypress
+            scrollable.scrollBy({ left: event.data.direction === "left" ? -step : step, behavior: "smooth" });
+          }
+        }
+      });
+    `;
+    iframe.contentDocument.head.appendChild(script);
+  }
+
   function createOverlayWithIframe(url) {
     console.log("url", url);
     const overlayId = "my-peach-overlay";
@@ -38,13 +55,13 @@
       const header = document.createElement("div");
       header.className = "window-header";
       header.innerHTML = "Peach Safety";
-  
+
       // Create close button
       const closeButton = document.createElement("div");
       closeButton.className = "close-button";
       closeButton.innerHTML = "\u00D7";
       closeButton.onclick = () => floatingWindow.remove();
-  
+
       // Create content area
       const content = document.createElement("div");
       content.className = "window-content";
@@ -53,57 +70,65 @@
       iframeElement.src = url;
       iframeElement.allow = "clipboard-write; fullscreen; microphone";
       content.appendChild(iframeElement);
-  
+
       // Create resize handle
       const resizeHandle = document.createElement("div");
       resizeHandle.className = "resize-handle";
-  
+
       // Append elements
       header.appendChild(closeButton);
       floatingWindow.appendChild(header);
       floatingWindow.appendChild(content);
       floatingWindow.appendChild(resizeHandle);
       document.body.appendChild(floatingWindow);
-  
+
+      // Inject swipe handler once iframe is loaded
+      iframeElement.addEventListener("load", () => {
+        try {
+          injectSwipeHandler(iframeElement);
+        } catch (e) {
+          console.error("Failed to inject swipe handler:", e);
+        }
+      });
+
       // Make window draggable
       let isDragging = false;
       let currentX;
       let currentY;
       let initialX;
       let initialY;
-  
+
       // Initial position (top-right corner)
-      const windowWidth = parseInt(getComputedStyle(floatingWindow).width) || 400; // Fallback width
-      const windowHeight = parseInt(getComputedStyle(floatingWindow).height) || 300; // Fallback height
-      currentX = window.innerWidth - windowWidth; // Position at right edge
-      currentY = 0; // Position at top edge
+      const windowWidth = parseInt(getComputedStyle(floatingWindow).width) || 400;
+      const windowHeight = parseInt(getComputedStyle(floatingWindow).height) || 300;
+      currentX = window.innerWidth - windowWidth;
+      currentY = 0;
       floatingWindow.style.left = currentX + "px";
       floatingWindow.style.top = currentY + "px";
-      floatingWindow.style.right = ""; // Clear right to avoid conflicts
-  
+      floatingWindow.style.right = "";
+
       // Dragging logic
       header.addEventListener("mousedown", (e) => {
         initialX = e.clientX - currentX;
         initialY = e.clientY - currentY;
         isDragging = true;
       });
-  
+
       const handleMouseMove = (e) => {
         if (isDragging) {
           e.preventDefault();
           currentX = e.clientX - initialX;
           currentY = e.clientY - initialY;
-  
+
           const windowWidth = window.innerWidth;
           const windowHeight = window.innerHeight;
           const rect = floatingWindow.getBoundingClientRect();
           const floatingWidth = rect.width;
           const floatingHeight = rect.height;
-  
-          // Clamp: keep window within viewport
+
           currentX = Math.max(0, Math.min(currentX, windowWidth - floatingWidth));
           currentY = Math.max(0, Math.min(currentY, windowHeight - floatingHeight));
-  
+
           floatingWindow.style.left = currentX + "px";
           floatingWindow.style.top = currentY + "px";
         }
@@ -111,18 +136,17 @@
           const rect = floatingWindow.getBoundingClientRect();
           let width = rect.width + (e.clientX - lastDownX);
           let height = rect.height + (e.clientY - lastDownY);
-  
-          // Limit width/height: min 200x150, max window size
+
           width = Math.max(200, Math.min(width, window.innerWidth - rect.left));
           height = Math.max(150, Math.min(height, window.innerHeight - rect.top));
-  
+
           floatingWindow.style.width = width + "px";
           floatingWindow.style.height = height + "px";
           lastDownX = e.clientX;
           lastDownY = e.clientY;
         }
       };
-  
+
       const handleMouseUp = () => {
         isDragging = false;
         isResizing = false;
@@ -130,22 +154,21 @@
           mouseCaptureOverlay.parentNode.removeChild(mouseCaptureOverlay);
         }
       };
-  
+
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
-  
+
       // Make window resizable
       let isResizing = false;
       let lastDownX;
       let lastDownY;
       let mouseCaptureOverlay = null;
-  
+
       resizeHandle.addEventListener("mousedown", (e) => {
         lastDownX = e.clientX;
         lastDownY = e.clientY;
         isResizing = true;
-  
-        // Create a transparent overlay to capture mouse events over iframe
+
         mouseCaptureOverlay = document.createElement("div");
         mouseCaptureOverlay.style.position = "absolute";
         mouseCaptureOverlay.style.top = "0";
@@ -156,8 +179,7 @@
         mouseCaptureOverlay.style.background = "transparent";
         content.appendChild(mouseCaptureOverlay);
       });
-  
-      // Clean up event listeners when overlay is removed
+
       const originalRemove = floatingWindow.remove;
       floatingWindow.remove = function () {
         document.removeEventListener("mousemove", handleMouseMove);
@@ -167,7 +189,7 @@
         }
         originalRemove.call(floatingWindow);
       };
-  
+
       isOverlayVisible = true;
     }
   }
@@ -210,6 +232,22 @@
     if (e.altKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       toggleOverlay();
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const overlay = document.getElementById("my-peach-overlay");
+      if (overlay && isOverlayVisible) {
+        e.preventDefault();
+        const iframe = overlay.querySelector("iframe");
+        if (iframe && iframe.contentWindow) {
+          try {
+            iframe.contentWindow.postMessage(
+              { action: "swipe", direction: e.key === "ArrowLeft" ? "left" : "right" },
+              "*"
+            );
+          } catch (e) {
+            console.error("Failed to send swipe message to iframe:", e);
+          }
+        }
+      }
     }
   });
 
